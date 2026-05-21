@@ -1,31 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import CandlestickChart from "@/components/candlestick-chart";
+import { getStocks, TICKERS as TICKER_METAS } from "@/lib/stocks";
 
-type MarketDatum = {
-  symbol: string;
-  label: string;
-  price: number;
-  open: number;
-  high: number;
-  low: number;
-  previousClose: number;
-  changePercent: number;
-  volume: number;
-  marketCap: number;
-};
-
-type FetchResult = { success: true; data: MarketDatum[] };
-
-const TICKERS = ["BTC-USD", "ETH-USD", "AAPL", "MSFT", "TSLA", "NVDA"];
-
-async function fetchStocks(): Promise<FetchResult> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/stocks`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error("Failed to fetch stocks");
-  return res.json();
-}
+const TICKERS = TICKER_METAS.map((t) => t.symbol);
 
 type TickerPageProps = { params: Promise<{ ticker: string }> };
 
@@ -60,7 +38,7 @@ export default async function TickerDetailPage({ params }: TickerPageProps) {
 
   if (!TICKERS.includes(upper)) notFound();
 
-  const { data } = await fetchStocks();
+  const { data } = await getStocks();
   const stock = data.find((d) => d.symbol === upper);
 
   if (!stock) notFound();

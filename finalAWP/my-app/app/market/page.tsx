@@ -1,27 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import FilterInput from "@/components/filter-input";
-
-type MarketDatum = {
-  symbol: string;
-  label: string;
-  price: number;
-  open: number;
-  high: number;
-  low: number;
-  previousClose: number;
-  changePercent: number;
-  volume: number;
-  marketCap: number;
-};
-
-async function fetchStocks(): Promise<{ data: MarketDatum[] }> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000"}/api/stocks`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error("Failed to fetch stocks");
-  return res.json();
-}
+import { getStocks, type MarketDatum } from "@/lib/stocks";
 
 function fmtCurrency(n: number): string {
   if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
@@ -46,7 +26,7 @@ const ArrowRight = () => <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="
 export default async function MarketPage() {
   let data: MarketDatum[];
   try {
-    const result = await fetchStocks();
+    const result = await getStocks();
     data = result.data;
   } catch {
     notFound();
