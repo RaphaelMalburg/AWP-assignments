@@ -78,6 +78,10 @@ desktop.ini
 ehthumbs.db
 $RECYCLE.BIN/
 
+# ---- Office app lock files ----
+.~lock.*#
+~$*
+
 # ---- Misc ----
 *.tmp
 *.temp
