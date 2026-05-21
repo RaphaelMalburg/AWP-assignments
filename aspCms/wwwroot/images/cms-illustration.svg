@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" width="600" height="400">
+  <rect width="600" height="400" fill="#f8f9fa" rx="10"/>
+  <rect x="50" y="50" width="500" height="50" fill="#e9ecef" rx="5"/>
+  <rect x="50" y="120" width="200" height="150" fill="#dee2e6" rx="5"/>
+  <rect x="280" y="120" width="270" height="30" fill="#adb5bd" rx="3"/>
+  <rect x="280" y="160" width="270" height="20" fill="#ced4da" rx="3"/>
+  <rect x="280" y="190" width="200" height="20" fill="#ced4da" rx="3"/>
+  <rect x="280" y="220" width="270" height="20" fill="#ced4da" rx="3"/>
+  <circle cx="150" cy="195" r="40" fill="#6f42c1"/>
+  <text x="300" y="280" font-family="Arial, sans-serif" font-size="24" fill="#6c757d">MiniCMS Illustration</text>
+</svg>

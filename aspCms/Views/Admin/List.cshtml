@@ -1,0 +1,38 @@
+@{
+    ViewData["Title"] = "Pages List";
+    Layout = "_LayoutAdmin";
+}
+
+<h2>Pages List</h2>
+
+<p>
+    <a asp-action="Create" class="btn btn-primary">Create New Page</a>
+</p>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Id</th>
+            <th>Page</th>
+            <th>Title</th>
+            <th>Author</th>
+            <th>Date</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+@foreach (var item in Model) {
+        <tr>
+            <td>@item.Id</td>
+            <td>@item.Page</td>
+            <td>@Html.Raw(item.Title)</td>
+            <td>@item.Author</td>
+            <td>@item.Date.ToString("g")</td>
+            <td>
+                <a asp-action="Edit" asp-route-id="@item.Id" class="btn btn-sm btn-warning">Edit</a>
+                <a asp-action="Delete" asp-route-id="@item.Id" class="btn btn-sm btn-danger">Delete</a>
+            </td>
+        </tr>
+}
+    </tbody>
+</table>

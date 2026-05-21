@@ -1,0 +1,16 @@
+@{
+    ViewData["Title"] = Model?.Page ?? "Page";
+}
+
+@if (Model != null)
+{
+    @Html.Raw(Model.Title)
+    @Html.Raw(Model.Text)
+}
+else
+{
+    <div class="text-center">
+        <h1>Page not found</h1>
+        <p>The requested page does not exist.</p>
+    </div>
+}
