@@ -1,5 +1,4 @@
-import { APP_PROFILES, getAllSubreddits, getProfile } from "./apps.config.js";
-import { fetchNewPosts } from "./ingest/reddit.js";
+import { APP_PROFILES, getProfile } from "./apps.config.js";
 import { applyDeterministicFilter } from "./filters/deterministic.js";
 import { scoreOpportunity } from "./llm/score.js";
 import { draftReply } from "./llm/draft.js";
@@ -12,66 +11,28 @@ import {
   promoCountThisWeek,
 } from "./db/queries.js";
 import { sendForApproval, sendDigest } from "./approval/telegram.js";
-import type { Opportunity, Draft } from "./types.js";
+import type { Opportunity, Draft, RedditPost } from "./types.js";
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? 7);
 const MAX_PROMO_PER_DAY_PER_SUB = 1;
 const MAX_PROMO_PER_WEEK_PER_APP = 5;
 
-// Separate digest queues: score 9-10 → immediate, score 7-8 → batch
-const immediateQueue: { opportunity: Opportunity; draft: Draft }[] = [];
+// Score ≥ 9 → sent immediately; 7-8 → batched into digest every 2h
 const digestQueue: { opportunity: Opportunity; draft: Draft }[] = [];
 
 /**
- * One full ingest-filter-score-draft cycle.
- * Called by the 5-minute cron.
+ * Entry point called by each Snoostorm "item" event.
+ * Fully async — errors are caught internally so the stream stays alive.
  */
-export async function runPipeline(): Promise<void> {
-  const subreddits = getAllSubreddits();
-  console.log(`[pipeline] Checking ${subreddits.length} subreddits…`);
+export async function handlePost(post: RedditPost, subreddit: string): Promise<void> {
+  const onCooldown = await isSubredditOnCooldown(subreddit);
+  if (onCooldown) return;
 
-  for (const subreddit of subreddits) {
-    const onCooldown = await isSubredditOnCooldown(subreddit);
-    if (onCooldown) {
-      console.log(`[pipeline] r/${subreddit} is on cooldown — skipping`);
-      continue;
-    }
-
-    let posts;
-    try {
-      posts = await fetchNewPosts(subreddit);
-    } catch (err) {
-      console.error(`[pipeline] Failed to fetch r/${subreddit}:`, err);
-      continue;
-    }
-
-    console.log(`[pipeline] r/${subreddit}: ${posts.length} posts fetched`);
-
-    for (const post of posts) {
-      await processPost(post, subreddit);
-    }
-  }
-
-  // Send digest for medium-priority leads accumulated this cycle
-  if (digestQueue.length > 0) {
-    await sendDigest(digestQueue.splice(0));
-  }
-
-  // Immediate sends happen inline in processPost — drain any that queued
-  for (const item of immediateQueue.splice(0)) {
-    await sendForApproval(item.opportunity, item.draft);
-  }
-}
-
-async function processPost(
-  post: Parameters<typeof applyDeterministicFilter>[0],
-  subreddit: string
-): Promise<void> {
-  // ── 1. Deterministic filter ───────────────────────────────────────────────
+  // ── 1. Deterministic filter (zero LLM cost) ───────────────────────────────
   const filter = applyDeterministicFilter(post, APP_PROFILES);
   if (!filter.passed || !filter.appId) return;
 
-  // ── 2. DB upsert (deduplication) ──────────────────────────────────────────
+  // ── 2. DB upsert — deduplication via unique post_id constraint ────────────
   const row = await upsertOpportunity({
     post_id: post.id,
     subreddit,
@@ -84,11 +45,11 @@ async function processPost(
     llm_score: null,
     llm_reasoning: null,
   });
-  if (!row) return; // duplicate
+  if (!row) return; // already processed
 
   const profile = getProfile(filter.appId)!;
 
-  // ── 3. Score ──────────────────────────────────────────────────────────────
+  // ── 3. Score ───────────────────────────────────────────────────────────────
   let scoreResult;
   try {
     scoreResult = await scoreOpportunity(post, profile);
@@ -104,33 +65,32 @@ async function processPost(
   });
 
   if (scoreResult.score < SCORE_THRESHOLD) {
-    console.log(`[pipeline] Post ${post.id} scored ${scoreResult.score} — below threshold`);
     await setOpportunityStatus(row.id, "filtered_out");
+    console.log(`[pipeline] ${post.id} scored ${scoreResult.score} — below threshold`);
     return;
   }
 
-  // ── 4. Rate limits check ──────────────────────────────────────────────────
+  // ── 4. Rate limits ────────────────────────────────────────────────────────
   const todayCount = await promoCountToday(subreddit, filter.appId);
   if (todayCount >= MAX_PROMO_PER_DAY_PER_SUB) {
-    console.log(`[pipeline] r/${subreddit} hit daily promo limit`);
     await setOpportunityStatus(row.id, "filtered_out");
+    console.log(`[pipeline] r/${subreddit} hit daily promo limit`);
     return;
   }
 
   const weekCount = await promoCountThisWeek(filter.appId);
   if (weekCount >= MAX_PROMO_PER_WEEK_PER_APP) {
-    console.log(`[pipeline] ${filter.appId} hit weekly promo limit`);
     await setOpportunityStatus(row.id, "filtered_out");
+    console.log(`[pipeline] ${filter.appId} hit weekly promo limit`);
     return;
   }
 
-  // ── 5. Draft ──────────────────────────────────────────────────────────────
+  // ── 5. Draft ───────────────────────────────────────────────────────────────
   let draftContent;
   try {
     draftContent = await draftReply(post, profile, subreddit);
   } catch (err) {
     console.error(`[pipeline] Draft failed for ${post.id}:`, err);
-    await setOpportunityStatus(row.id, "scored"); // leave in scored state
     return;
   }
 
@@ -143,7 +103,6 @@ async function processPost(
 
   await setOpportunityStatus(row.id, "pending_approval");
 
-  // ── 6. Queue for Telegram ─────────────────────────────────────────────────
   const opportunity: Opportunity = {
     ...row,
     status: "pending_approval",
@@ -151,13 +110,23 @@ async function processPost(
     llm_reasoning: scoreResult.reasoning,
   };
 
+  // ── 6. Telegram routing ───────────────────────────────────────────────────
   if (scoreResult.score >= 9) {
-    // High priority: send immediately
     await sendForApproval(opportunity, draft);
+    console.log(`[pipeline] ${post.id} → immediate approval (score ${scoreResult.score})`);
   } else {
-    // Medium priority: batch into next digest
     digestQueue.push({ opportunity, draft });
+    console.log(`[pipeline] ${post.id} → digest queue (score ${scoreResult.score})`);
   }
+}
 
-  console.log(`[pipeline] Post ${post.id} queued for approval (score ${scoreResult.score})`);
+/**
+ * Flush the digest queue to Telegram. Called by the 2-hour cron in index.ts.
+ * No-ops if there's nothing queued.
+ */
+export async function flushDigest(): Promise<void> {
+  if (digestQueue.length === 0) return;
+  const batch = digestQueue.splice(0);
+  console.log(`[pipeline] Flushing digest — ${batch.length} item(s)`);
+  await sendDigest(batch);
 }

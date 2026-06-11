@@ -1,24 +1,32 @@
 import { chatCompletion } from "./client.js";
 import type { AppProfile, RedditPost, ScoreResult } from "../types.js";
 
-const SYSTEM_PROMPT = `You are a lead-qualification specialist for a SaaS app.
-Your job is to read a Reddit post and determine how strong a lead it is.
+// Scoring weights mirror the Liftof/reddit-scout rubric
+const SYSTEM_PROMPT = `You are a lead-qualification specialist for a SaaS product.
+Read a Reddit post and score it as a lead opportunity.
 
 Respond ONLY with a single valid JSON object — no markdown, no explanation, no code fences.
 
 JSON schema:
 {
   "score": <integer 0-10>,
-  "appId": "<string — the app id provided in the context>",
-  "reasoning": "<one sentence explaining the score>"
+  "appId": "<the app id from context>",
+  "reasoning": "<one sentence>"
 }
 
-Scoring guide:
-10 = Person is explicitly searching for exactly this type of solution right now
-8-9 = Clear pain point that the app solves; they're open to recommendations
-6-7 = Tangentially relevant; might be interested if approached right
-3-5 = Loosely related topic but not a real lead
-0-2 = Not a lead; keyword match was coincidental`;
+Scoring rubric (weights add to 100%):
+- Relevance to the product (30%): Does the post topic directly match what the product does?
+- User intent (25%): Is the person actively looking for a solution right now, or just venting?
+- Recency signal (20%): Is this a fresh, unanswered question or an old thread with accepted answers?
+- Engagement level (15%): Some comments already? That means the thread has visibility.
+- Natural fit for a value-first reply (10%): Can we answer helpfully without it feeling like a pitch?
+
+Score mapping:
+10   = Perfect: actively asking for exactly this solution, no accepted answer yet
+8-9  = Strong: clear pain point, open to recommendations, good thread visibility
+6-7  = Moderate: tangentially relevant; could work with the right angle
+3-5  = Weak: loosely related keyword match, not a real buying signal
+0-2  = Not a lead: coincidental match, wrong context, or would look like spam`;
 
 export async function scoreOpportunity(
   post: RedditPost,
@@ -33,7 +41,7 @@ App context:
 - What it does: ${profile.oneLiner}
 - Problems it solves: ${profile.problemsSolved.join(" | ")}
 
-Reddit post from r/${post.subreddit_name_prefixed}:
+Reddit post (${post.subreddit_name_prefixed}):
 Title: ${post.title}
 Body: ${post.selftext || "(no body — title only)"}
 `.trim();

@@ -1,10 +1,11 @@
 import "node:process";
 import cron from "node-cron";
-import { runPipeline } from "./pipeline.js";
+import { getAllSubreddits } from "./apps.config.js";
+import { startStreams } from "./ingest/reddit.js";
+import { handlePost, flushDigest } from "./pipeline.js";
 import { runCheckIns } from "./monitor/circuit-breaker.js";
 import { startBot } from "./approval/telegram.js";
 
-// Validate required env vars on startup
 const required = [
   "REDDIT_CLIENT_ID",
   "REDDIT_CLIENT_SECRET",
@@ -27,30 +28,41 @@ for (const key of required) {
 
 console.log("[scout] Starting Reddit Scout…");
 
-// Start the Telegram approval bot (long-polling)
+// ── Telegram approval bot (long-polling) ─────────────────────────────────────
 startBot();
 
-// Ingest + filter + score + draft: every 5 minutes
-cron.schedule("*/5 * * * *", async () => {
-  console.log("[cron] Running pipeline…");
+// ── Snoostorm: one SubmissionStream per subreddit ─────────────────────────────
+// Replaces the manual 5-min cron + getNew() loop. Snoostorm handles polling
+// and deduplication within a process run; Supabase handles cross-restart dedup.
+const subreddits = getAllSubreddits();
+const stopStreams = startStreams(subreddits, handlePost);
+
+process.on("SIGTERM", () => {
+  console.log("[scout] SIGTERM received — stopping streams");
+  stopStreams();
+  process.exit(0);
+});
+
+// ── Digest flush: every 2 hours ───────────────────────────────────────────────
+// Medium-priority leads (score 7-8) accumulate in memory and are sent as a
+// batch to avoid notification spam.
+cron.schedule("0 */2 * * *", async () => {
   try {
-    await runPipeline();
+    await flushDigest();
   } catch (err) {
-    console.error("[cron] Pipeline error:", err);
+    console.error("[cron:digest] error:", err);
   }
 });
 
-// Check-in on posted comments: every day at 09:00 UTC
+// ── Comment check-ins: daily at 09:00 UTC ────────────────────────────────────
+// Updates 24h/7d scores and removal status; triggers circuit breaker if needed.
 cron.schedule("0 9 * * *", async () => {
   console.log("[cron] Running check-ins…");
   try {
     await runCheckIns();
   } catch (err) {
-    console.error("[cron] Check-in error:", err);
+    console.error("[cron:checkins] error:", err);
   }
 });
 
-// Run pipeline immediately on startup (helps during development)
-runPipeline().catch((err) => console.error("[startup] Pipeline error:", err));
-
-console.log("[scout] Crons scheduled. Waiting for events…");
+console.log(`[scout] Streaming ${subreddits.length} subreddit(s). Waiting for posts…`);

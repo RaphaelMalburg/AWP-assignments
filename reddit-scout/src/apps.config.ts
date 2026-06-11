@@ -1,13 +1,19 @@
 import type { AppProfile } from "./types.js";
 
 /**
- * Add your app profiles here. Each entry drives the full pipeline:
- * which subreddits to watch, what keywords trigger filtering, how to
- * draft replies, and where to send traffic.
- *
- * Fill in App B before running in production — it's the other half of
- * the lead funnel.
+ * Keywords are split into categories so the deterministic filter can be tuned
+ * per signal strength and the scoring prompt gets richer context.
+ * All categories are optional — just use `keywords` for a flat list if preferred.
  */
+export interface KeywordCategories {
+  /** "inventory app", "food cost" — direct product queries */
+  direct?: string[];
+  /** "running out of stock", "waste is killing me" — pain language */
+  problem?: string[];
+  /** "MarketMan alternative", "vs BlueCart" — comparison/switch intent */
+  competitor?: string[];
+}
+
 export const APP_PROFILES: AppProfile[] = [
   {
     id: "kitchen",
@@ -29,23 +35,32 @@ export const APP_PROFILES: AppProfile[] = [
       "finedining",
       "foodtrucks",
     ],
+    // Flat keyword list used by the deterministic filter
     keywords: [
+      // direct
       "inventory app",
       "food cost",
       "track ingredients",
       "kitchen management",
       "waste tracking",
       "recipe costing",
-      "food waste",
+      "food inventory",
       "inventory management",
+      "menu costing",
+      "ingredient tracking",
       "cost of goods",
       "stock management",
-      "ingredient tracking",
-      "menu costing",
-      "food inventory",
-      "is there an app",
+      // problem
+      "running out of stock",
+      "food waste",
       "how do you track",
       "how do you guys manage",
+      "is there an app",
+      "what app do you use",
+      // comparison / switch intent
+      "MarketMan alternative",
+      "BlueCart alternative",
+      "instead of MarketMan",
     ],
     negativeKeywords: [
       "hiring",
@@ -59,7 +74,7 @@ export const APP_PROFILES: AppProfile[] = [
     landingUrl: "https://kitchenos.app?utm_source=reddit&utm_medium=organic&utm_campaign=",
     voiceNotes: `
       - Speak as a fellow restaurant person, not a SaaS salesperson.
-      - Lead with the actual answer to their question — be useful even if they don't use the app.
+      - Lead with the actual answer to their question — be useful even if they never use the app.
       - Mention the app in the second or third paragraph, never the first sentence.
       - Always say "I built" or "I'm the founder of" — never pretend to be a random user.
       - Never use buzzwords like "streamline", "leverage", "empower", "game-changer".
@@ -85,15 +100,9 @@ export const APP_PROFILES: AppProfile[] = [
     problemsSolved: [
       "TODO — list the pains App B solves in the user's own words",
     ],
-    subreddits: [
-      // TODO — add subreddits
-    ],
-    keywords: [
-      // TODO — add trigger keywords
-    ],
-    negativeKeywords: [
-      // TODO — add discard keywords
-    ],
+    subreddits: [],
+    keywords: [],
+    negativeKeywords: [],
     landingUrl: "https://app-b.example.com?utm_source=reddit&utm_medium=organic&utm_campaign=",
     voiceNotes: "TODO — describe the voice/tone and what never to say",
     selfPromoRules: {},

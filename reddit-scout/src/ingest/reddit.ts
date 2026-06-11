@@ -1,4 +1,5 @@
 import Snoowrap from "snoowrap";
+import { SubmissionStream } from "snoostorm";
 import type { RedditPost } from "../types.js";
 
 let client: Snoowrap | null = null;
@@ -25,45 +26,63 @@ function getClient(): Snoowrap {
     password: process.env.REDDIT_PASSWORD!,
   });
 
-  // Be conservative with rate limiting
   client.config({ requestDelay: 1100, continueAfterRatelimitError: true });
   return client;
 }
 
-/** Fetch up to `limit` new posts from a subreddit. */
-export async function fetchNewPosts(
-  subreddit: string,
-  limit = 50
-): Promise<RedditPost[]> {
+/**
+ * Start one SubmissionStream per subreddit (Snoostorm handles polling).
+ * Calls `onPost` for each new submission that passes the age gate.
+ * Returns a cleanup function that removes all listeners.
+ */
+export function startStreams(
+  subreddits: string[],
+  onPost: (post: RedditPost, subreddit: string) => Promise<void>
+): () => void {
   const r = getClient();
-  const sub = r.getSubreddit(subreddit);
-  const listing = await sub.getNew({ limit });
-
   const maxAgeHours = Number(process.env.MAX_POST_AGE_HOURS ?? 24);
-  const cutoffEpoch = (Date.now() / 1000) - maxAgeHours * 3600;
+  // Poll each subreddit every 60 s — stays well under Reddit's 60 req/min limit
+  const pollTime = Number(process.env.REDDIT_POLL_MS ?? 60_000);
 
-  const posts: RedditPost[] = [];
-  for (const post of listing) {
-    if (post.created_utc < cutoffEpoch) continue;
-    if (post.author.name === process.env.REDDIT_USERNAME) continue;
+  const streams: SubmissionStream[] = [];
 
-    posts.push({
-      id: post.id,
-      title: post.title,
-      selftext: post.selftext ?? "",
-      author: post.author.name,
-      subreddit_name_prefixed: post.subreddit_name_prefixed,
-      url: `https://reddit.com${post.permalink}`,
-      created_utc: post.created_utc,
-      score: post.score,
-      permalink: post.permalink,
+  for (const subreddit of subreddits) {
+    const stream = new SubmissionStream(r, { subreddit, limit: 25, pollTime });
+
+    stream.on("item", async (submission: Snoowrap.Submission) => {
+      const cutoff = Date.now() / 1000 - maxAgeHours * 3600;
+      if (submission.created_utc < cutoff) return;
+      if (submission.author.name === process.env.REDDIT_USERNAME) return;
+
+      const post: RedditPost = {
+        id: submission.id,
+        title: submission.title,
+        selftext: submission.selftext ?? "",
+        author: submission.author.name,
+        subreddit_name_prefixed: submission.subreddit_name_prefixed,
+        url: `https://reddit.com${submission.permalink}`,
+        created_utc: submission.created_utc,
+        score: submission.score,
+        permalink: submission.permalink,
+      };
+
+      try {
+        await onPost(post, subreddit);
+      } catch (err) {
+        console.error(`[stream:${subreddit}] handler error:`, err);
+      }
     });
+
+    streams.push(stream);
+    console.log(`[ingest] Streaming r/${subreddit} (poll every ${pollTime / 1000}s)`);
   }
 
-  return posts;
+  return () => {
+    for (const s of streams) s.removeAllListeners();
+  };
 }
 
-/** Post a comment on a submission by its full-name ID (e.g. "t3_abc123"). */
+/** Post a comment on a submission. Returns the permalink of the new comment. */
 export async function postComment(
   submissionId: string,
   text: string
@@ -75,7 +94,7 @@ export async function postComment(
   return (comment as { permalink: string }).permalink;
 }
 
-/** Fetch the current score of a comment by its full-name ID (e.g. "t1_abc123"). */
+/** Fetch the current karma score of a comment. */
 export async function getCommentScore(commentId: string): Promise<number | null> {
   const r = getClient();
   try {
@@ -87,10 +106,7 @@ export async function getCommentScore(commentId: string): Promise<number | null>
   }
 }
 
-/**
- * Check whether a comment still exists (not deleted/removed).
- * Returns false if the API returns a 404 or the comment body is "[removed]".
- */
+/** Returns true if the comment has been removed or deleted. */
 export async function isCommentRemoved(commentId: string): Promise<boolean> {
   const r = getClient();
   try {
