@@ -1,183 +1,179 @@
+import { randomUUID } from "node:crypto";
 import { db } from "./client.js";
 import type { Opportunity, OpportunityStatus, Draft, Post, SubredditState } from "../types.js";
 
 // ── Opportunities ──────────────────────────────────────────────────────────
 
-export async function upsertOpportunity(
+export function upsertOpportunity(
   data: Omit<Opportunity, "id" | "created_at">
-): Promise<Opportunity | null> {
-  const { data: row, error } = await db
-    .from("opportunities")
-    .upsert(data, { onConflict: "post_id", ignoreDuplicates: true })
-    .select()
-    .single();
+): Opportunity | null {
+  const existing = db
+    .prepare("SELECT * FROM opportunities WHERE post_id = ?")
+    .get(data.post_id) as Opportunity | undefined;
 
-  if (error?.code === "23505") return null; // duplicate — already tracked
-  if (error) throw new Error(`upsertOpportunity: ${error.message}`);
-  return row as Opportunity;
+  if (existing) return null; // already tracked
+
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO opportunities
+      (id, post_id, subreddit, app_id, title, body, author, url, status, llm_score, llm_reasoning)
+    VALUES
+      (@id, @post_id, @subreddit, @app_id, @title, @body, @author, @url, @status, @llm_score, @llm_reasoning)
+  `).run({ id, ...data });
+
+  return db
+    .prepare("SELECT * FROM opportunities WHERE id = ?")
+    .get(id) as Opportunity;
 }
 
-export async function setOpportunityStatus(
+export function setOpportunityStatus(
   id: string,
   status: OpportunityStatus,
   extras?: Partial<Pick<Opportunity, "llm_score" | "llm_reasoning">>
-): Promise<void> {
-  const { error } = await db
-    .from("opportunities")
-    .update({ status, ...extras })
-    .eq("id", id);
-
-  if (error) throw new Error(`setOpportunityStatus: ${error.message}`);
+): void {
+  db.prepare(`
+    UPDATE opportunities
+    SET status = @status,
+        llm_score     = COALESCE(@llm_score, llm_score),
+        llm_reasoning = COALESCE(@llm_reasoning, llm_reasoning)
+    WHERE id = @id
+  `).run({ id, status, llm_score: extras?.llm_score ?? null, llm_reasoning: extras?.llm_reasoning ?? null });
 }
 
-export async function getOpportunity(id: string): Promise<Opportunity | null> {
-  const { data, error } = await db
-    .from("opportunities")
-    .select("*")
-    .eq("id", id)
-    .single();
-
-  if (error) throw new Error(`getOpportunity: ${error.message}`);
-  return data as Opportunity;
+export function getOpportunity(id: string): Opportunity | null {
+  return (db.prepare("SELECT * FROM opportunities WHERE id = ?").get(id) as Opportunity) ?? null;
 }
 
 // ── Drafts ─────────────────────────────────────────────────────────────────
 
-export async function insertDraft(
-  data: Omit<Draft, "id" | "created_at">
-): Promise<Draft> {
-  const { data: row, error } = await db
-    .from("drafts")
-    .insert(data)
-    .select()
-    .single();
+export function insertDraft(data: Omit<Draft, "id" | "created_at">): Draft {
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO drafts (id, opportunity_id, version, content, edited_by_human)
+    VALUES (@id, @opportunity_id, @version, @content, @edited_by_human)
+  `).run({ id, ...data, edited_by_human: data.edited_by_human ? 1 : 0 });
 
-  if (error) throw new Error(`insertDraft: ${error.message}`);
-  return row as Draft;
+  return db.prepare("SELECT * FROM drafts WHERE id = ?").get(id) as Draft;
 }
 
-export async function getLatestDraft(opportunityId: string): Promise<Draft | null> {
-  const { data, error } = await db
-    .from("drafts")
-    .select("*")
-    .eq("opportunity_id", opportunityId)
-    .order("version", { ascending: false })
-    .limit(1)
-    .single();
+export function getLatestDraft(opportunityId: string): Draft | null {
+  const row = db
+    .prepare("SELECT * FROM drafts WHERE opportunity_id = ? ORDER BY version DESC LIMIT 1")
+    .get(opportunityId) as Record<string, unknown> | undefined;
 
-  if (error && error.code !== "PGRST116") throw new Error(`getLatestDraft: ${error.message}`);
-  return (data as Draft) ?? null;
+  if (!row) return null;
+  return { ...(row as unknown as Draft), edited_by_human: Boolean(row.edited_by_human) };
 }
 
 // ── Posts ──────────────────────────────────────────────────────────────────
 
-export async function insertPost(data: Omit<Post, "id">): Promise<Post> {
-  const { data: row, error } = await db
-    .from("posts")
-    .insert(data)
-    .select()
-    .single();
+export function insertPost(data: Omit<Post, "id">): Post {
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO posts (id, opportunity_id, permalink, posted_at, comment_score_24h, comment_score_7d, removed, clicks)
+    VALUES (@id, @opportunity_id, @permalink, @posted_at, @comment_score_24h, @comment_score_7d, @removed, @clicks)
+  `).run({ id, ...data, removed: data.removed ? 1 : 0 });
 
-  if (error) throw new Error(`insertPost: ${error.message}`);
-  return row as Post;
+  return db.prepare("SELECT * FROM posts WHERE id = ?").get(id) as Post;
 }
 
-export async function updatePostScores(
+export function updatePostScores(
   opportunityId: string,
   scores: { comment_score_24h?: number; comment_score_7d?: number; removed?: boolean }
-): Promise<void> {
-  const { error } = await db
-    .from("posts")
-    .update(scores)
-    .eq("opportunity_id", opportunityId);
+): void {
+  const sets: string[] = [];
+  const params: Record<string, unknown> = { opportunity_id: opportunityId };
 
-  if (error) throw new Error(`updatePostScores: ${error.message}`);
+  if (scores.comment_score_24h !== undefined) {
+    sets.push("comment_score_24h = @comment_score_24h");
+    params.comment_score_24h = scores.comment_score_24h;
+  }
+  if (scores.comment_score_7d !== undefined) {
+    sets.push("comment_score_7d = @comment_score_7d");
+    params.comment_score_7d = scores.comment_score_7d;
+  }
+  if (scores.removed !== undefined) {
+    sets.push("removed = @removed");
+    params.removed = scores.removed ? 1 : 0;
+  }
+
+  if (sets.length === 0) return;
+  db.prepare(`UPDATE posts SET ${sets.join(", ")} WHERE opportunity_id = @opportunity_id`).run(params);
 }
 
-/** Returns posts that need a 24h or 7d score check-in */
-export async function getPostsDueForCheckIn(): Promise<(Post & { opportunity_id: string; subreddit: string })[]> {
-  const now = new Date();
-  const twentyFiveHoursAgo = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
-  const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString();
+/** Posts needing a 24h or 7d check-in */
+export function getPostsDueForCheckIn(): (Post & { subreddit: string })[] {
+  const now = Date.now();
+  const h25 = new Date(now - 25 * 3600 * 1000).toISOString();
+  const d8  = new Date(now - 8 * 24 * 3600 * 1000).toISOString();
 
-  const { data, error } = await db
-    .from("posts")
-    .select("*, opportunities!inner(subreddit)")
-    .or(`and(comment_score_24h.is.null,posted_at.lte.${twentyFiveHoursAgo}),and(comment_score_7d.is.null,posted_at.lte.${eightDaysAgo})`)
-    .eq("removed", false);
-
-  if (error) throw new Error(`getPostsDueForCheckIn: ${error.message}`);
-  return (data ?? []) as (Post & { opportunity_id: string; subreddit: string })[];
+  return db.prepare(`
+    SELECT p.*, o.subreddit
+    FROM posts p
+    JOIN opportunities o ON o.id = p.opportunity_id
+    WHERE p.removed = 0
+      AND (
+        (p.comment_score_24h IS NULL AND p.posted_at <= @h25)
+        OR
+        (p.comment_score_7d  IS NULL AND p.posted_at <= @d8)
+      )
+  `).all({ h25, d8 }) as (Post & { subreddit: string })[];
 }
 
 // ── Subreddit state ────────────────────────────────────────────────────────
 
-export async function getSubredditState(subreddit: string): Promise<SubredditState | null> {
-  const { data, error } = await db
-    .from("subreddit_state")
-    .select("*")
-    .eq("subreddit", subreddit)
-    .single();
-
-  if (error && error.code !== "PGRST116") throw new Error(`getSubredditState: ${error.message}`);
-  return (data as SubredditState) ?? null;
+export function getSubredditState(subreddit: string): SubredditState | null {
+  return (
+    (db.prepare("SELECT * FROM subreddit_state WHERE subreddit = ?").get(subreddit) as SubredditState) ?? null
+  );
 }
 
-export async function incrementSubredditRemovals(subreddit: string): Promise<void> {
-  const state = await getSubredditState(subreddit);
-  const current = state?.removals_30d ?? 0;
-
-  const { error } = await db
-    .from("subreddit_state")
-    .upsert({ subreddit, removals_30d: current + 1 }, { onConflict: "subreddit" });
-
-  if (error) throw new Error(`incrementSubredditRemovals: ${error.message}`);
+export function incrementSubredditRemovals(subreddit: string): void {
+  db.prepare(`
+    INSERT INTO subreddit_state (subreddit, removals_30d) VALUES (@subreddit, 1)
+    ON CONFLICT(subreddit) DO UPDATE SET removals_30d = removals_30d + 1
+  `).run({ subreddit });
 }
 
-export async function setSubredditCooldown(
-  subreddit: string,
-  cooldownUntil: Date,
-  notes: string
-): Promise<void> {
-  const { error } = await db
-    .from("subreddit_state")
-    .upsert({ subreddit, cooldown_until: cooldownUntil.toISOString(), notes }, { onConflict: "subreddit" });
-
-  if (error) throw new Error(`setSubredditCooldown: ${error.message}`);
+export function setSubredditCooldown(subreddit: string, cooldownUntil: Date, notes: string): void {
+  db.prepare(`
+    INSERT INTO subreddit_state (subreddit, cooldown_until, notes) VALUES (@subreddit, @cooldown_until, @notes)
+    ON CONFLICT(subreddit) DO UPDATE SET cooldown_until = @cooldown_until, notes = @notes
+  `).run({ subreddit, cooldown_until: cooldownUntil.toISOString(), notes });
 }
 
-/** Returns true if the subreddit is under cooldown */
-export async function isSubredditOnCooldown(subreddit: string): Promise<boolean> {
-  const state = await getSubredditState(subreddit);
+export function isSubredditOnCooldown(subreddit: string): boolean {
+  const state = getSubredditState(subreddit);
   if (!state?.cooldown_until) return false;
   return new Date(state.cooldown_until) > new Date();
 }
 
-/** How many promotional comments were posted today for this app in this subreddit */
-export async function promoCountToday(subreddit: string, appId: string): Promise<number> {
+export function promoCountToday(subreddit: string, appId: string): number {
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
 
-  const { count, error } = await db
-    .from("posts")
-    .select("id", { count: "exact" })
-    .eq("opportunities.subreddit", subreddit)
-    .eq("opportunities.app_id", appId)
-    .gte("posted_at", startOfDay.toISOString());
+  const row = db.prepare(`
+    SELECT COUNT(*) as cnt
+    FROM posts p
+    JOIN opportunities o ON o.id = p.opportunity_id
+    WHERE o.subreddit = @subreddit
+      AND o.app_id = @app_id
+      AND p.posted_at >= @start
+  `).get({ subreddit, app_id: appId, start: startOfDay.toISOString() }) as { cnt: number };
 
-  if (error) throw new Error(`promoCountToday: ${error.message}`);
-  return count ?? 0;
+  return row.cnt;
 }
 
-/** How many promotional comments were posted this week for this app total */
-export async function promoCountThisWeek(appId: string): Promise<number> {
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+export function promoCountThisWeek(appId: string): number {
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
 
-  const { count, error } = await db
-    .from("posts")
-    .select("id", { count: "exact" })
-    .gte("posted_at", weekAgo);
+  const row = db.prepare(`
+    SELECT COUNT(*) as cnt
+    FROM posts p
+    JOIN opportunities o ON o.id = p.opportunity_id
+    WHERE o.app_id = @app_id
+      AND p.posted_at >= @week_ago
+  `).get({ app_id: appId, week_ago: weekAgo }) as { cnt: number };
 
-  if (error) throw new Error(`promoCountThisWeek: ${error.message}`);
-  return count ?? 0;
+  return row.cnt;
 }
