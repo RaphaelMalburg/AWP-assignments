@@ -1,0 +1,28 @@
+{
+  "name": "reddit-scout",
+  "version": "1.0.0",
+  "description": "Reddit lead-gen agent — monitors subreddits, scores opportunities, drafts replies, sends to Telegram for human approval before posting.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node --esm src/index.ts",
+    "migrate": "ts-node --esm src/db/migrate.ts",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "grammy": "^1.21.1",
+    "snoowrap": "^1.23.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/snoowrap": "^1.19.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
