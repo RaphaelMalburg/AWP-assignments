@@ -32,7 +32,7 @@ export async function scoreOpportunity(
   post: RedditPost,
   profile: AppProfile
 ): Promise<ScoreResult> {
-  const model = process.env.OPENROUTER_SCORE_MODEL ?? "google/gemma-3-27b-it";
+  const model = process.env.OPENROUTER_SCORE_MODEL ?? "google/gemini-2.5-flash-preview-05-20";
 
   const userMessage = `
 App context:

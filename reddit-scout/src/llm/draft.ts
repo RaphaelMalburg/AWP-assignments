@@ -26,7 +26,7 @@ export async function draftReply(
   profile: AppProfile,
   subreddit: string
 ): Promise<string> {
-  const model = process.env.OPENROUTER_DRAFT_MODEL ?? "google/gemma-3-27b-it";
+  const model = process.env.OPENROUTER_DRAFT_MODEL ?? "google/gemini-2.5-flash-preview-05-20";
 
   const userMessage = `
 Reddit post from r/${subreddit}:
@@ -59,7 +59,7 @@ export async function redraftWithFeedback(
   profile: AppProfile,
   subreddit: string
 ): Promise<string> {
-  const model = process.env.OPENROUTER_DRAFT_MODEL ?? "google/gemma-3-27b-it";
+  const model = process.env.OPENROUTER_DRAFT_MODEL ?? "google/gemini-2.5-flash-preview-05-20";
 
   const userMessage = `
 Original Reddit post from r/${subreddit}:
